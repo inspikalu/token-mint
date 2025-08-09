@@ -1,3 +1,4 @@
+// app/create-mint/page.tsx
 "use client"
 import React, { useState, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import {
   createInitializeTransferHookInstruction
 } from '@solana/spl-token';
 import { useWallet } from '@solana/wallet-adapter-react'; // Import wallet adapter hook
+import { saveMint } from "@/app/actions/saveMint"; // Import server action
 
 // Types
 interface MintConfig {
@@ -169,7 +171,7 @@ function useCreateMint(connection: Connection): UseCreateMintReturn {
 const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
 export default function CreateMintPage() {
-  const { connected } = useWallet(); // Check if wallet is connected
+  const { connected, publicKey } = useWallet(); // Check if wallet is connected
   const { createMint, isLoading, error } = useCreateMint(connection);
   const [formData, setFormData] = useState<MintConfig>({
     name: '',
@@ -206,6 +208,22 @@ export default function CreateMintPage() {
     };
 
     const mintResult = await createMint(config);
+    
+    if (mintResult.success && publicKey) {
+      try {
+        await saveMint({
+          ...formData,
+          mintAddress: mintResult.mintAddress,
+          signature: mintResult.signature,
+          creator: publicKey.toString(),
+          createdAt: new Date().toISOString(),
+        });
+      } catch (saveError) {
+        console.error('Failed to save mint to server:', saveError);
+        // Optional: Set an error state for save failure
+      }
+    }
+
     setResult(mintResult);
   };
 
