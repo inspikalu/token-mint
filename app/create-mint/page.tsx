@@ -17,11 +17,9 @@ import {
   createInitializeMintInstruction,
   getMintLen,
   ExtensionType,
-  createInitializeTransferHookInstruction,
-  createAccount,
-  getAssociatedTokenAddressSync,
-  ASSOCIATED_TOKEN_PROGRAM_ID
+  createInitializeTransferHookInstruction
 } from '@solana/spl-token';
+import { useWallet } from '@solana/wallet-adapter-react'; // Import wallet adapter hook
 
 // Types
 interface MintConfig {
@@ -46,11 +44,23 @@ interface UseCreateMintReturn {
 }
 
 // Custom hook for creating mint with Token 2022
-function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintReturn {
+function useCreateMint(connection: Connection): UseCreateMintReturn {
+  const { publicKey, signTransaction } = useWallet(); // Get wallet info
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const createMint = useCallback(async (config: MintConfig): Promise<CreateMintResult> => {
+    if (!publicKey || !signTransaction) {
+      const errorMessage = 'Wallet not connected';
+      setError(errorMessage);
+      return {
+        mintAddress: '',
+        signature: '',
+        success: false,
+        error: errorMessage,
+      };
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -77,7 +87,7 @@ function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintRet
       // Create account instruction
       transaction.add(
         SystemProgram.createAccount({
-          fromPubkey: payer.publicKey,
+          fromPubkey: publicKey, // Use wallet's public key
           newAccountPubkey: mintAddress,
           space: mintLen,
           lamports,
@@ -92,7 +102,7 @@ function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintRet
           transaction.add(
             createInitializeTransferHookInstruction(
               mintAddress,
-              payer.publicKey,
+              publicKey, // Use wallet's public key
               transferHookProgramId,
               TOKEN_2022_PROGRAM_ID
             )
@@ -107,21 +117,24 @@ function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintRet
         createInitializeMintInstruction(
           mintAddress,
           config.decimals || 9,
-          payer.publicKey,
+          publicKey, // Use wallet's public key
           null, // freeze authority (optional)
           TOKEN_2022_PROGRAM_ID
         )
       );
 
+      // Set recent blockhash
+      const { blockhash } = await connection.getLatestBlockhash();
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = publicKey;
+
+      // Sign transaction with wallet and mint keypair
+      const signedTransaction = await signTransaction(transaction);
+      signedTransaction.partialSign(mintKeypair);
+
       // Send and confirm transaction
-      const signature = await sendAndConfirmTransaction(
-        connection,
-        transaction,
-        [payer, mintKeypair],
-        {
-          commitment: 'confirmed',
-        }
-      );
+      const signature = await connection.sendRawTransaction(signedTransaction.serialize());
+      await connection.confirmTransaction(signature, 'confirmed');
 
       return {
         mintAddress: mintAddress.toString(),
@@ -142,7 +155,7 @@ function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintRet
     } finally {
       setIsLoading(false);
     }
-  }, [connection, payer]);
+  }, [connection, publicKey, signTransaction]);
 
   return {
     createMint,
@@ -151,13 +164,12 @@ function useCreateMint(connection: Connection, payer: Keypair): UseCreateMintRet
   };
 }
 
-// Mock connection and payer for demonstration
-// In a real app, these would come from your wallet connection
-const mockConnection = new Connection('https://api.devnet.solana.com');
-const mockPayer = Keypair.generate();
+// Solana connection
+const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
 export default function CreateMintPage() {
-  const { createMint, isLoading, error } = useCreateMint(mockConnection, mockPayer);
+  const { connected } = useWallet(); // Check if wallet is connected
+  const { createMint, isLoading, error } = useCreateMint(connection);
   const [formData, setFormData] = useState<MintConfig>({
     name: '',
     ticker: '',
@@ -182,6 +194,11 @@ export default function CreateMintPage() {
       return;
     }
 
+    if (!connected) {
+      alert('Please connect your wallet');
+      return;
+    }
+
     const config: MintConfig = {
       ...formData,
       transferHookProgramId: formData.transferHookProgramId || undefined,
@@ -199,94 +216,94 @@ export default function CreateMintPage() {
           <CardDescription>Enter the details for your new Token 2022 program.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="name">Token Name *</Label>
-              <Input 
-                id="name" 
-                placeholder="My Awesome Token" 
-                className="bg-input border-border text-foreground"
-                value={formData.name}
-                onChange={handleInputChange('name')}
-                required
-              />
+          <div className="grid gap-2">
+            <Label htmlFor="name">Token Name *</Label>
+            <Input 
+              id="name" 
+              placeholder="My Awesome Token" 
+              className="bg-input border-border text-foreground"
+              value={formData.name}
+              onChange={handleInputChange('name')}
+              required
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="ticker">Token Ticker *</Label>
+            <Input 
+              id="ticker" 
+              placeholder="MAT" 
+              className="bg-input border-border text-foreground"
+              value={formData.ticker}
+              onChange={handleInputChange('ticker')}
+              required
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="image">Image URL (Metadata - Coming Soon)</Label>
+            <Input
+              id="image"
+              type="url"
+              placeholder="https://example.com/token-logo.png"
+              className="bg-input border-border text-foreground opacity-60"
+              value={formData.image}
+              onChange={handleInputChange('image')}
+              disabled
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="decimals">Decimals</Label>
+            <Input
+              id="decimals"
+              type="number"
+              placeholder="9"
+              className="bg-input border-border text-foreground"
+              value={formData.decimals}
+              onChange={(e) => setFormData(prev => ({
+                ...prev,
+                decimals: parseInt(e.target.value) || 9
+              }))}
+              min="0"
+              max="18"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="transferHookProgramId">Transfer Hook Program ID</Label>
+            <Input
+              id="transferHookProgramId"
+              placeholder="Enter program ID (optional)"
+              className="bg-input border-border text-foreground"
+              value={formData.transferHookProgramId}
+              onChange={handleInputChange('transferHookProgramId')}
+            />
+          </div>
+          
+          {error && (
+            <div className="text-red-500 text-sm bg-red-50 p-3 rounded border border-red-200">
+              Error: {error}
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="ticker">Token Ticker *</Label>
-              <Input 
-                id="ticker" 
-                placeholder="MAT" 
-                className="bg-input border-border text-foreground"
-                value={formData.ticker}
-                onChange={handleInputChange('ticker')}
-                required
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="image">Image URL (Metadata - Coming Soon)</Label>
-              <Input
-                id="image"
-                type="url"
-                placeholder="https://example.com/token-logo.png"
-                className="bg-input border-border text-foreground opacity-60"
-                value={formData.image}
-                onChange={handleInputChange('image')}
-                disabled
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="decimals">Decimals</Label>
-              <Input
-                id="decimals"
-                type="number"
-                placeholder="9"
-                className="bg-input border-border text-foreground"
-                value={formData.decimals}
-                onChange={(e) => setFormData(prev => ({
-                  ...prev,
-                  decimals: parseInt(e.target.value) || 9
-                }))}
-                min="0"
-                max="18"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="transferHookProgramId">Transfer Hook Program ID</Label>
-              <Input
-                id="transferHookProgramId"
-                placeholder="Enter program ID (optional)"
-                className="bg-input border-border text-foreground"
-                value={formData.transferHookProgramId}
-                onChange={handleInputChange('transferHookProgramId')}
-              />
-            </div>
-            
-            {error && (
-              <div className="text-red-500 text-sm bg-red-50 p-3 rounded border border-red-200">
-                Error: {error}
+          )}
+          
+          {result && result.success && (
+            <div className="text-green-700 text-sm bg-green-50 p-3 rounded border border-green-200">
+              <div><strong>Mint created successfully!</strong></div>
+              <div className="mt-1 break-all">
+                <strong>Address:</strong> {result.mintAddress}
               </div>
-            )}
-            
-            {result && result.success && (
-              <div className="text-green-700 text-sm bg-green-50 p-3 rounded border border-green-200">
-                <div><strong>Mint created successfully!</strong></div>
-                <div className="mt-1 break-all">
-                  <strong>Address:</strong> {result.mintAddress}
-                </div>
-                <div className="mt-1 break-all">
-                  <strong>Signature:</strong> {result.signature}
-                </div>
+              <div className="mt-1 break-all">
+                <strong>Signature:</strong> {result.signature}
               </div>
-            )}
-          </CardContent>
+            </div>
+          )}
+        </CardContent>
         <CardFooter>
-            <Button 
-              onClick={handleSubmit}
-              className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
-              disabled={isLoading}
-            >
-              {isLoading ? 'Creating Mint...' : 'Create Mint'}
-            </Button>
-          </CardFooter>
+          <Button 
+            onClick={handleSubmit}
+            className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
+            disabled={isLoading || !connected}
+          >
+            {isLoading ? 'Creating Mint...' : !connected ? 'Connect Wallet' : 'Create Mint'}
+          </Button>
+        </CardFooter>
       </Card>
     </div>
   );
